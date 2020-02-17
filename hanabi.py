@@ -979,7 +979,7 @@ class SelfIntentionalPlayer(Player):
     def get_action(self, nr, hands, knowledge, trash, played, board, valid_actions, hints):
         '''
         choose the action of this agent.
-        :param nr: int, nr-th player
+        :param nr: int, action of nr-th player
         :param hands: list of list, hands[nr]
         :param knowledge: nested list, knowledge[nr][i-th card][Color][rank] contains probability
         :param trash: list, discarded cards
@@ -997,6 +997,7 @@ class SelfIntentionalPlayer(Player):
         self.explanation = []  # Text to be shown in UI
         self.explanation.append(["Your Hand:"] + map(f, hands[1-nr]))
 
+        ###############################################################
         ##### (1) do what the other player (human) wants me to do #####
         # ### 1A) original ###
         # action = []  # list, list of all plausible action
@@ -1193,42 +1194,56 @@ class SelfIntentionalPlayer(Player):
         # ##############################################################################
 
 
-        ### 1D) TODO: heuristically favour interpreting hints as keep sign for older cards
-        ###############################################################################
+        ### 1D) heuristically favour interpreting hints as keep sign for older cards ###
         action = None  # PLAY, DISCARD
         card_index = None  # index of the card to be played or discarded
 
         if self.gothint:  # if I am given a hint about my hands
             (act, plr) = self.gothint
+            pointed_set = set()  # all cards that is positively identified
+            play_set = set()  # surely playable cards
+            mayplay_set = set()  # might be playable
+            keep_set = set()  # only one realization might be left
+            discard_set = set()  # surely discardable
+            # Color hint
             if act.type == HINT_COLOR:
                 for ci, card in enumerate(knowledge[nr]):
-                    pointed = sum(card[act.col]) > 0
+                    pointed = sum(card[act.col]) > 0  # positively identified
+
                     possible_hint = get_possible(card)
                     play = playable(possible_hint, board)
-                    mayplay = potentially_playable(possible_hint, board)  # possibility of playing is prioritised
+                    # ADD: Keep
+                    keep = False
+                    if pointed:
+                        pointed_set.add(ci)
+                        for col in ALL_COLORS:
+                            for rank in range(5):
+                                if card[col][rank] == 1:  # exactly one realization left
+                                    # TODO: also check if it is actually useful
+                                    # print('keep {}th card given num hint, card might be col:{} rank:{}'.format(
+                                    #     ci+1, COLORNAMES[col], rank+1), self.keeplist)
+                                    keep = True
+                    mayplay = potentially_playable(possible_hint, board)
                     discard = discardable(possible_hint, board)
+                    # ADD: append all possibile interpretations
                     if play and pointed:
-                        action = PLAY  # the last (the newest) surely playable card should be played
-                        card_index = ci
-                    elif mayplay and pointed and action != PLAY:
-                        action = PLAY  # keep action if it's play for sure
-                        card_index = ci
-                    elif discard and pointed and action != PLAY:
-                        action = DISCARD
-                        card_index = ci
+                        play_set.add(ci)
+                    elif mayplay and pointed:
+                        mayplay_set.add(ci)
+                    if keep and pointed:
+                        keep_set.add(ci)
+                    if discard and pointed:
+                        discard_set.add(ci)
 
-
-            elif act.type == HINT_NUMBER:  # analog to color hint
-                # sure_played = False  # ADD: to play the oldest surely playable card if there are multiples
-                play_set = set()
-                mayplay_set = set()
-                keep_set = set()
-                discard_set = set()
+            # Rank hint, analog
+            elif act.type == HINT_NUMBER:
                 for ci, card in enumerate(knowledge[nr]):
                     cnt = 0
                     for c in ALL_COLORS:
                         cnt += card[c][act.num - 1]
                     pointed = cnt > 0
+                    if pointed:
+                        pointed_set.add(ci)
 
                     possible_hint = get_possible(card)
                     play = playable(possible_hint, board)
@@ -1241,14 +1256,9 @@ class SelfIntentionalPlayer(Player):
                                     # print('keep {}th card given num hint, card might be col:{} rank:{}'.format(
                                     #     ci+1, COLORNAMES[col], rank+1), self.keeplist)
                                     keep = True
-                                # else:
-                                #     print(ci+1, COLORNAMES[col], rank+1, card[col][rank])
                     mayplay = potentially_playable(possible_hint, board)
                     discard = discardable(possible_hint, board)
-
-                    # TODO: heuristics between mayplay and keep
-                    # If multiple cards are positively identified: The card that is surely playable should be played,
-                    # and other cards should be kept
+                    # ADD: append all possibile interpretations
                     if play and pointed:
                         play_set.add(ci)
                     elif mayplay and pointed:
@@ -1258,35 +1268,41 @@ class SelfIntentionalPlayer(Player):
                     if discard and pointed:
                         discard_set.add(ci)
 
-                    print('play, mayplay, keep, discard: ', play_set, mayplay_set, keep_set, discard_set)
-                    if len(play_set):  # if there exists a playable card
-                        action = PLAY
-                        card_index = min(play_set)  # play the oldest playable and keep all others
-                        # TODO: unhashable type set
-                        self.keeplist = self.keeplist.union(play_set.union(mayplay_set).union(keep_set).difference(set([card_index])))
-                        print('play a playable, keep others')
-                    elif len(mayplay_set):  # if no cards are playable, play mayplayable
-                        if min(mayplay_set) >= 2:  # only relatively new cards are mayplayable
-                            action = PLAY
-                            card_index = min(mayplay_set)
-                            self.keeplist = self.keeplist.union(mayplay_set.union(keep_set).difference(set([card_index])))
-                            print('play a mayplayable that is new')
-                        elif len(mayplay_set.difference(keep_set)):  # cards that are only mayplayable and not keep
-                            action = PLAY
-                            card_index = min(mayplay_set.difference(keep_set))
-                            self.keeplist = self.keeplist.union(mayplay_set.union(keep_set).difference(set([card_index])))
-                            print('play a mayplayable that is not hinted to be kept')
-                        else: # mayplay_set == keep_set
-                            self.keeplist = self.keeplist.union(keep_set)
-                            print('all mayplayable are also to be kept', mayplay_set == keep_set)
-                    elif len(discard_set):  # only if all other options are gone, discard safely
-                        action = DISCARD
-                        card_index = random.choice(discard_set)
-                        self.keeplist = self.keeplist.union(keep_set.difference(discard_set))
-                    elif len(keep_set):  # only keep_set is not empty
-                        self.keeplist = self.keeplist.union(keep_set)
-                    else:
-                        print('you moron')
+            # ADD: Deciding what to do based on all possible interpretations
+            print('play, mayplay, keep, discard sets: ', play_set, mayplay_set, keep_set, discard_set)
+            if len(play_set):  # if there exists a (surely) playable card
+                action = PLAY
+                card_index = min(play_set)  # play the oldest playable and keep all others
+                self.keeplist = self.keeplist.union(  # keep all cards except for the played one and discardables
+                    play_set.union(mayplay_set).union(keep_set).difference(set([card_index])))
+                print('play a playable, keep others')
+                # TODO: if multiple cards are mayplayable, you should wait to make it sure
+            elif len(mayplay_set) > 1:  # keep all hinted cards if unsure which one is to be played
+                self.keeplist = self.keeplist.union(mayplay_set.union(keep_set))
+                print('more than one potentially playable cards')
+            elif len(mayplay_set) == 1:  # if only one card might be playable
+                if min(mayplay_set) >= 2:  # new cards are more likely to be hinted to be played then to be kept
+                    action = PLAY
+                    card_index = min(mayplay_set)
+                    self.keeplist = self.keeplist.union(mayplay_set.union(keep_set).difference(set([card_index])))
+                    print('play a mayplayable that is relatively new')
+                elif len(mayplay_set.difference(keep_set)):  # cards that are only mayplayable and not keep
+                    action = PLAY
+                    card_index = min(mayplay_set.difference(keep_set))
+                    self.keeplist = self.keeplist.union(mayplay_set.union(keep_set).difference(set([card_index])))
+                    print('play an unambiguous mayplayable')
+                else:  # if the card is old, it is probably a sign to keep it
+                    self.keeplist = self.keeplist.union(mayplay_set).union(keep_set)
+                    print('old cards are rather hinted to be kept')
+            elif len(discard_set):  # only if all other options are gone, discard safely
+                action = DISCARD
+                card_index = random.choice(discard_set)
+                self.keeplist = self.keeplist.union(keep_set.difference(discard_set))
+            elif len(keep_set):  # only keep_set is not empty
+                self.keeplist = self.keeplist.union(keep_set)
+            else:
+                print('I am not sure what you are trying to tell me')
+                self.keeplist = self.keeplist.union(pointed_set)
 
 
                     # if play and pointed:
@@ -1357,7 +1373,7 @@ class SelfIntentionalPlayer(Player):
         if not result:  # no action from direct hints in stage 1
             for i, card in enumerate(possible):  # for each card in hands
                 if playable(card, board):
-                    print('i-th card is surely playable: ', i)
+                    print('i-th card is surely playable: ', i+1)
                     result = Action(PLAY, cnr=i)  # should play the newest card if possible
                     self.keeplist = shift_index(i, self.keeplist)  # shift so that keeplist makes sense
                     print('shift keeplist after play: ', self.keeplist)
@@ -1460,9 +1476,15 @@ class SelfIntentionalPlayer(Player):
         diff = lambda l1, l2: [x for x in l1 if x not in l2]
         maydiscard = diff(xrange(handsize), self.keeplist)  # maydiscard only if not to be kept
         print('may be discarded: ', maydiscard)
-        self.keeplist = shift_index(maydiscard[0], self.keeplist) # the oldest from discardable cards will be discarded
-        print('shift keeplist after discarding the oldest: ', self.keeplist)
-        return Action(DISCARD, cnr=maydiscard[0])
+        if len(maydiscard):
+            self.keeplist = shift_index(maydiscard[0], self.keeplist) # the oldest from discardable cards will be discarded
+            print('shift keeplist after discarding the oldest: ', self.keeplist)
+            return Action(DISCARD, cnr=maydiscard[0])
+        else:
+            self.keeplist = shift_index(0, self.keeplist)
+            print('you now told to me to keep every card')
+            return Action(DISCARD, cnr=0)
+
         #############################################################################
         #############################################################################
         #############################################################################
